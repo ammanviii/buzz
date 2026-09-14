@@ -277,6 +277,12 @@ mod tests {
         assert!(captured
             .iter()
             .all(|request| request.body.as_slice() == APNS_RECONNECT_PAYLOAD));
+        for request in captured.iter() {
+            let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(payload["aps"]["sound"], "default");
+            assert_eq!(payload["aps"]["mutable-content"], 1);
+            assert!(payload["aps"]["alert"]["body"].is_string());
+        }
         assert!(captured
             .iter()
             .all(|request| !request.headers.contains_key(reqwest::header::AUTHORIZATION)));

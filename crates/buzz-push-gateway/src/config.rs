@@ -135,9 +135,11 @@ impl Config {
         let public_delivery_url = req(e, "BUZZ_PUSH_PUBLIC_DELIVERY_URL")?
             .parse::<url::Url>()
             .map_err(|_| ConfigError::Invalid("BUZZ_PUSH_PUBLIC_DELIVERY_URL"))?;
+        // This URL is trusted operator configuration, never a client input.
+        // Personal deployments can use their own TLS origin, including a
+        // Tailscale Serve port; retain the exact delivery route and URL guards.
         if public_delivery_url.scheme() != "https"
-            || public_delivery_url.host_str() != Some("push.buzz.xyz")
-            || public_delivery_url.port().is_some()
+            || public_delivery_url.host_str().is_none()
             || public_delivery_url.path() != "/v1/deliveries/apns"
             || public_delivery_url.query().is_some()
             || public_delivery_url.fragment().is_some()
@@ -296,6 +298,19 @@ mod tests {
     }
 
     #[test]
+    fn private_https_gateway_preserves_exact_delivery_authority() {
+        for endpoint in [
+            "https://push.example/v1/deliveries/apns",
+            "https://personal.example:8444/v1/deliveries/apns",
+        ] {
+            let mut env = base();
+            env.insert("BUZZ_PUSH_PUBLIC_DELIVERY_URL".into(), endpoint.into());
+            let config = Config::from_map(&env).unwrap();
+            assert_eq!(config.public_delivery_url.as_str(), endpoint);
+        }
+    }
+
+    #[test]
     fn malformed_security_configuration_fails_startup() {
         for (key, value) in [
             (
@@ -304,8 +319,11 @@ mod tests {
             ),
             (
                 "BUZZ_PUSH_PUBLIC_DELIVERY_URL",
-                "https://push.example/v1/deliveries/apns",
+                "https://push.example/v1/deliveries/apns?override=1",
             ),
+            ("BUZZ_PUSH_PUBLIC_DELIVERY_URL", "https://user:pass@push.example/v1/deliveries/apns"),
+            ("BUZZ_PUSH_PUBLIC_DELIVERY_URL", "https://push.example/v1/deliveries/apns#fragment"),
+            ("BUZZ_PUSH_PUBLIC_DELIVERY_URL", "https://push.example/wrong-route"),
             ("BUZZ_PUSH_DOGFOOD_APP_ATTEST_APP_ID", ""),
             ("BUZZ_PUSH_DOGFOOD_APNS_ENVIRONMENT", "staging"),
             ("BUZZ_PUSH_MAX_GRANT_LIFETIME_SECONDS", "0"),
