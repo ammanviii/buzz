@@ -7,6 +7,7 @@ import 'package:buzz/shared/community/community.dart';
 import 'package:buzz/shared/community/community_provider.dart';
 import 'package:buzz/shared/community/community_storage.dart';
 import 'package:buzz/shared/push/push_subscription.dart';
+import 'package:buzz/shared/relay/relay_provider.dart';
 import 'package:nostr/nostr.dart' as nostr;
 
 import 'community_storage_test.dart';
@@ -64,6 +65,61 @@ void main() {
   }
 
   group('CommunityListNotifier', () {
+    test(
+      'push lease bookkeeping preserves the live relay configuration',
+      () async {
+        final community = Community.create(
+          name: 'Personal',
+          relayUrl: 'https://personal.example.com',
+          nsec: nostr.Keys.generate().nsec,
+        ).copyWith(pushNotificationsEnabled: true);
+        await communityStorage.save(community);
+        await communityStorage.saveActiveId(community.id);
+        container = createContainer();
+        await container.read(activeCommunityProvider.future);
+        final changes = <RelayConfig>[];
+        final subscription = container.listen(
+          relayConfigProvider,
+          (_, next) => changes.add(next),
+        );
+        addTearDown(subscription.close);
+        final connectedConfig = container.read(relayConfigProvider);
+        final notifier = container.read(communityListProvider.notifier);
+
+        final generation = await notifier.reservePushLeaseGeneration(
+          community.id,
+        );
+        await container.read(activeCommunityProvider.future);
+        await container.pump();
+        await notifier.markPushLeaseAccepted(
+          community.id,
+          subscriptions: community.pushSubscriptionState.desired,
+          generation: generation,
+        );
+        await container.read(activeCommunityProvider.future);
+        await container.pump();
+
+        expect(
+          changes,
+          isEmpty,
+          reason:
+              'Lease publication must not reset its own authenticated socket',
+        );
+        expect(
+          identical(container.read(relayConfigProvider), connectedConfig),
+          isTrue,
+        );
+        expect(
+          container
+              .read(activeCommunityProvider)
+              .value!
+              .pushSubscriptionState
+              .acceptedGeneration,
+          generation,
+        );
+      },
+    );
+
     test('loads empty list initially', () async {
       container = createContainer();
       final communities = await container.read(communityListProvider.future);
@@ -601,10 +657,18 @@ void main() {
       final notifier = container.read(communityListProvider.notifier);
       await notifier.addCommunity(ws1);
       await notifier.addCommunity(ws2);
+      await notifier.switchCommunity(ws1.id);
+      await container.read(activeCommunityProvider.future);
+      final beforeSwitch = container.read(relayConfigProvider);
+      expect(beforeSwitch.baseUrl, ws1.relayUrl);
       await notifier.switchCommunity(ws2.id);
+      await container.read(activeCommunityProvider.future);
 
       final activeId = await communityStorage.loadActiveId();
       expect(activeId, ws2.id);
+      final afterSwitch = container.read(relayConfigProvider);
+      expect(afterSwitch.baseUrl, ws2.relayUrl);
+      expect(identical(afterSwitch, beforeSwitch), isFalse);
     });
   });
 
